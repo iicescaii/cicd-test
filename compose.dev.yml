@@ -1,0 +1,20 @@
+# Local development on every laptop: same Node version for everyone, live reload.
+# Usage (from the repo root):  docker compose -f compose.dev.yml up
+# Then open http://localhost:3000. Edit code normally; the page reloads.
+services:
+  web:
+    image: node:22-alpine
+    working_dir: /app
+    command: sh -c "npm install && npm run dev"
+    ports:
+      - "3000:3000"
+    volumes:
+      - .:/app
+      - node_modules:/app/node_modules
+    env_file: .env.local
+    environment:
+      # Makes file-change detection work on Windows/macOS bind mounts
+      - WATCHPACK_POLLING=true
+
+volumes:
+  node_modules:

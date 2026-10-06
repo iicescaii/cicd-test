@@ -1,0 +1,92 @@
+name: CI
+
+# CI happens on GitHub. CD happens on the Linux server: it pulls the new image itself
+# (server/pull-deploy.sh, every 5 minutes from cron, or instantly from a self-hosted runner).
+#
+#   pull request   -> test only
+#   push to main   -> test -> build -> size check -> push :sha-xxxxxxx and :staging to GHCR
+#   staging server -> sees the new :staging image and restarts app-staging
+#   production     -> Actions > "Promote to production" (promote.yml)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  MAX_IMAGE_MB: 500           # meeting requirement: image size. The build fails above this.
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run lint --if-present
+      - run: npm test --if-present
+
+  build:
+    needs: test
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - id: vars
+        run: |
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+          echo "tag=sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Build into the runner's Docker first, so the size can be checked before anything is pushed
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: |
+            ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.tag }}
+            ${{ steps.vars.outputs.image }}:staging
+          labels: org.opencontainers.image.revision=${{ steps.vars.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Check image size
+        env:
+          IMAGE: ${{ steps.vars.outputs.image }}:${{ steps.vars.outputs.tag }}
+        run: |
+          MB=$(( $(docker image inspect --format '{{.Size}}' "$IMAGE") / 1024 / 1024 ))
+          echo "### Image size: ${MB} MB (limit ${MAX_IMAGE_MB} MB)" >> "$GITHUB_STEP_SUMMARY"
+          [ "$MB" -le "$MAX_IMAGE_MB" ] || { echo "::error::Image is ${MB} MB, over the ${MAX_IMAGE_MB} MB limit"; exit 1; }
+
+      - name: Push to GHCR
+        env:
+          IMAGE: ${{ steps.vars.outputs.image }}
+          TAG: ${{ steps.vars.outputs.tag }}
+        run: |
+          docker push "$IMAGE:$TAG"
+          docker push "$IMAGE:staging"
+          echo "### Pushed \`$TAG\` as staging. Servers pick it up within 5 minutes." >> "$GITHUB_STEP_SUMMARY"
+          echo "To release: Actions > Promote to production > tag \`$TAG\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # Optional "instant" mode: runs pull-deploy.sh right away on a self-hosted runner installed
+  # on the Linux server (outbound connection only, no SSH, no public IP needed).
+  # Turn on with repo Settings > Secrets and variables > Actions > Variables: INSTANT_DEPLOY = true
+  # Only use a self-hosted runner with a PRIVATE repo.
+  deploy-instant:
+    needs: build
+    if: vars.INSTANT_DEPLOY == 'true'
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: /opt/app/pull-deploy.sh

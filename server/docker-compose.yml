@@ -1,0 +1,26 @@
+# Copy to /opt/app/ on the Linux server (WSL for the test, the VPS later).
+# /opt/app/.env has ONE line, in lowercase:   IMAGE=ghcr.io/owner/repo
+# .env.staging / .env.production hold the app's secrets and live only on the server (chmod 600).
+#
+# Each app listens only on the server itself; nginx in front sends the domains to these ports.
+# If the VPS uses Traefik instead, remove "ports" and add Traefik labels + its network.
+services:
+  app-staging:
+    image: ${IMAGE:?set IMAGE in /opt/app/.env}:staging
+    container_name: app-staging
+    env_file: .env.staging
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3001:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  app-production:
+    image: ${IMAGE:?set IMAGE in /opt/app/.env}:production
+    container_name: app-production
+    env_file: .env.production
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3002:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

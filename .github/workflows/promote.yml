@@ -1,0 +1,48 @@
+name: Promote to production
+
+# Points the :production tag in GHCR at an image that was already tested on staging.
+# The production server pulls it within 5 minutes (or instantly with INSTANT_DEPLOY).
+# Rollback = run this again with an older tag.
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Image tag from a CI run summary, e.g. sha-1a2b3c4. An older tag = rollback."
+        required: true
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'     # only main can release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check tag format
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$TAG" =~ ^sha-[0-9a-f]{7}$ ]] || { echo "Invalid tag: $TAG"; exit 1; }
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # No rebuild: production gets the exact image that ran on staging
+      - name: Point production at this tag
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"
+          docker buildx imagetools create -t "$IMAGE:production" "$IMAGE:$TAG"
+          echo "### \`$TAG\` is now production. The server switches within 5 minutes." >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-instant:
+    needs: promote
+    if: vars.INSTANT_DEPLOY == 'true'
+    runs-on: [self-hosted, linux]
+    steps:
+      - run: /opt/app/pull-deploy.sh

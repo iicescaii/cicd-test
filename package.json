@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "test": "echo no tests yet"
+    "test": "echo broken && exit 1"
   },
   "dependencies": {
     "next": "16.3.8",
